@@ -14,6 +14,7 @@ all of this in a nested folder structure
           - image-2.png
     meta_data.json
 
+![Zendesk demo](https://github.com/pjmuller/zendesk-helpcenter-export/raw/master/demo-screenshot.png)
 Bonus: it is smart in that when you rename a category, section, article it won't
 start to create duplicate folders but renames the old ones.
 The script can thus be used for both a new dump as updating an existing one.
