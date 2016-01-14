@@ -29,6 +29,17 @@ The script can thus be used for both a new dump as updating an existing one.
 
         ruby zendesk-helpcenter-export.rb yourzenmail@domain.com YoUrPassWoRd my-zen-subdomain
 
+# FAQ
+## I am getting LoadError's
+When you get the error
+
+    cannot load such file -- httparty (LoadError)
+
+it means you don't have the httpnecessary gems installed. Try
+
+    gem install httparty
+
+to solve the problem. (the same solution can be applied to install other missing gems)
 # Contribute
 
 Feel free to contribute through a pull request. This code has only been tested on one zendesk account and only on mac.
