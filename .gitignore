@@ -1,2 +1,5 @@
-export/*
-meta_data.json
+# ignore all (as to not include the exported subdirectories)
+*
+!README.md
+!demo-screenshot.png
+!zendesk-helpcenter-export.rb

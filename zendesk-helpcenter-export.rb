@@ -46,15 +46,18 @@ require 'uri'
 # - License: MIT
 #
 class ExportHelpCenter
-  attr :raw_data
+  attr :raw_data, :log_level
+  LOG_LEVELS = {"standard" => 1, "verbose" => 2}
 
   include HTTParty
   headers 'content-type'  => 'application/json'
 
-  def initialize(email_user:, password:, zedesk_subdomain:)
+  def initialize(email_user:, password:, zedesk_subdomain:, log_level: "standard")
     @auth = {:username => email_user, :password => password}
     # used to make one big dumpfile of all metadata related to your helpcenter
     @raw_data = {categories: [], sections: [], articles: [], article_attachments: []}
+    # log_level can be "verbose", "standard"
+    @log_level = LOG_LEVELS.has_key?(log_level) ? log_level : "standard"
     self.class.base_uri "https://#{zedesk_subdomain}.zendesk.com"
   end
 
@@ -63,16 +66,16 @@ class ExportHelpCenter
 
   def to_html!
     categories['categories'].each do |category|
-      puts category['name'].upcase
+      log(category['name'].upcase)
       @raw_data[:categories] << category
 
       sections(category['id'])['sections'].each do |section|
         @raw_data[:sections] << section
-        puts "  #{section['name']}"
+        log("  #{section['name']}")
 
         articles(section['id'])['articles'].each do |article|
           @raw_data[:articles] << article
-          puts "    #{article['name']}"
+          log("    #{article['name']}", "standard")
 
           article_dir = "#{dir_path(category, section, article)}/"
           # puts "article_dir = #{article_dir}"
@@ -94,7 +97,7 @@ class ExportHelpCenter
     File.open("./meta_data.json", "w+") { |f| f.puts JSON.pretty_generate(raw_data) }
   end
 
-  # section: Make sure directories exist
+  # Section: Article content
   # ---------------------------------------
 
   def article_html_content(article)
@@ -119,6 +122,19 @@ class ExportHelpCenter
 
   end
 
+  # section: Debugging
+  # ---------------------------------------
+  # input:
+  # - text: text to log
+  # - level: "standard" / "verbose". States when it needs to be logged
+  def log(text, level = "standard")
+    # protect against bad input
+    return unless LOG_LEVELS.has_key?(level)
+
+    # output when the log level we are requesting
+    puts text if LOG_LEVELS[log_level] >= LOG_LEVELS[level]
+  end
+
   # section: Make sure directories exist
   # ---------------------------------------
 
@@ -127,11 +143,14 @@ class ExportHelpCenter
   def dir_path(category, section = nil, article = nil)
     # each resource has an id and name attribute
     # let's use this to build a path where we can store the actual data
+    log("      buidling dir_path for #{[category, section, article].compact.map{|r| r['name']}}", "verbose")
     [category, section, article].compact.inject("./") do |dir_path, resource|
       # check if we have existing folder that needs to be renamed
       rename_dir_with_same_id!(dir_path, resource['id'], resource['name'])
       # build path and check if folder exists
-      dir_path += "#{resource['id']}-#{slugify(resource['name'])}/"
+      path_to_append = "#{resource['id']}-#{slugify(resource['name'])}/"
+      log("      #{path_to_append} appended to #{dir_path}", "verbose")
+      dir_path += path_to_append
       Dir.mkdir(dir_path) unless File.exists?(dir_path)
       # end point is begin point of next iteration
       dir_path
@@ -160,7 +179,7 @@ class ExportHelpCenter
 
     return false unless dir_to_rename
 
-    puts "      renaming #{path}#{dir_to_rename} to  #{path}#{id}-#{slugify(name)}"
+    log("      renaming #{path}#{dir_to_rename} to  #{path}#{id}-#{slugify(name)}", "verbose")
     FileUtils.mv "#{path}#{dir_to_rename}", "#{path}#{id}-#{slugify(name)}"
     return true
   end
@@ -186,7 +205,7 @@ class ExportHelpCenter
   def download_attachment!(article_attachment, store_in_dir)
     # check if file with that id is already present, if so, skip
     return true if Dir.entries(store_in_dir).select{|e| e.start_with?(article_attachment['id'].to_s)}.length > 0
-    puts "      #{article_attachment['file_name']}"
+    log("      #{article_attachment['file_name']}")
 
     begin
       options = {:basic_auth => @auth}
@@ -194,7 +213,7 @@ class ExportHelpCenter
       file_path = "#{store_in_dir}#{article_attachment['id']}-#{article_attachment['file_name']}"
       File.open(file_path, "w+") { |f| f.puts file_contents }
     rescue
-      puts "failed download: " + file_content_url
+      log("      !!! failed download: " + article_attachment['content_url'])
     end
   end
 end
@@ -203,7 +222,9 @@ end
 export = ExportHelpCenter.new(
   email_user: ARGV[0],
   password: ARGV[1],
-  zedesk_subdomain: ARGV[2]
+  zedesk_subdomain: ARGV[2],
+
+  log_level: ARGV[3]
 )
 
 export.to_html!
