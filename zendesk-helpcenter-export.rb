@@ -114,7 +114,7 @@ class ExportHelpCenter
   <body>
     <div id='container'>
       <h1>#{article['name']}</h1>
-      #{article['body'].gsub(regex_find, regex_replace)}
+      #{article['body'].to_s.gsub(regex_find, regex_replace)}
     </div>
   </body>
 </html>
@@ -185,7 +185,7 @@ class ExportHelpCenter
   end
 
   def slugify(text)
-    text.downcase.strip.gsub(' ', '-').gsub(/[^\w-]/, '')
+    text.to_s.downcase.strip.gsub(' ', '-').gsub(/[^\w-]/, '')
   end
 
   # section: API calls

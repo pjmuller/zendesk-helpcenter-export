@@ -29,6 +29,11 @@ The script can thus be used for both a new dump as updating an existing one.
 
         ruby zendesk-helpcenter-export.rb yourzenmail@domain.com YoUrPassWoRd my-zen-subdomain
 
+# Requirements
+
+- ruby >= 2.0, do ```ruby -v``` in your terminal. If lower google how update. (easy with rvm, rbenv, brew)
+- httparty gem, install through ```gem install httparty```
+
 # FAQ
 ## I am getting LoadError's
 When you get the error
