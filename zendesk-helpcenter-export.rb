@@ -65,6 +65,8 @@ class ExportHelpCenter
   # ---------------------------------------
 
   def to_html!
+    return if api_error?(categories)
+
     categories['categories'].each do |category|
       log(category['name'].upcase)
       @raw_data[:categories] << category
@@ -194,6 +196,26 @@ class ExportHelpCenter
     options = {:basic_auth => @auth}
     self.class.get("/api/v2/help_center/#{url}", options)
   end
+
+  def api_error?(api_response)
+    if api_response.code != 200
+      puts "Could not connect to the Zendesk API."
+      puts "Most likely you provided incorrect username / password / zendesk domain."
+      puts "\n\n"
+      puts "Here is the full response of the failed zendesk API call"
+      puts "-------------------------------------------------------"
+      puts "request: #{api_response.request.path}"
+      puts "status: #{api_response.headers['status']}"
+      puts "headers: #{api_response.headers.inspect}"
+      puts ""
+      puts "response: #{api_response.response.inspect}"
+      puts "parsed response: #{api_response.parsed_response.inspect}"
+      true
+    else
+      false
+    end
+  end
+
 
   # see documentation on https://developer.zendesk.com/rest_api/docs/help_center/introduction
   def categories()          api("categories.json")                          end
