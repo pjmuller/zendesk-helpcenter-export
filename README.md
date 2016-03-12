@@ -27,7 +27,7 @@ The script can thus be used for both a new dump as updating an existing one.
 2. copy this .rb file to the place where you want to store the export
 3. use terminal to navigate to the folder and run
 
-        ruby zendesk-helpcenter-export.rb yourzenmail@domain.com YoUrPassWoRd my-zen-subdomain
+        ruby zendesk-helpcenter-export.rb -e yourzenmail@domain.com -p YoUrPassWoRd -d my-zen-subdomain
 
 # Requirements
 

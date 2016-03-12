@@ -3,6 +3,8 @@ require 'httparty'
 require 'FileUtils'
 require 'json'
 require 'uri'
+require 'optparse'
+require 'rbconfig'
 
 
 # # Ruby script to export your Zendesk helpcenter
@@ -33,7 +35,7 @@ require 'uri'
 # 2. copy this .rb file to the place where you want to store the export
 # 3. use terminal to navigate to the folder and run
 #
-#     ruby zendesk-helpcenter-export.rb yourzenmail@domain.com YoUrPassWoRd my-zen-subdomain
+#     ruby zendesk-helpcenter-export.rb -e yourzenmail@domain.com -p YoUrPassWoRd -d my-zen-subdomain
 #
 # # Contribute
 #
@@ -46,19 +48,25 @@ require 'uri'
 # - License: MIT
 #
 class ExportHelpCenter
-  attr :raw_data, :log_level
-  LOG_LEVELS = {"standard" => 1, "verbose" => 2}
-
   include HTTParty
-  headers 'content-type'  => 'application/json'
 
-  def initialize(email_user:, password:, zedesk_subdomain:, log_level: "standard")
-    @auth = {:username => email_user, :password => password}
+
+  attr :raw_data, :log_level, :output_type
+  LOG_LEVELS = {standard: 1, verbose: 2}
+  OUTPUT_TYPES = [:slugified, :id_only]
+  REQUIRED_INPUTS = [:email, :password, :subdomain]
+
+
+  def initialize(options)
+    exit unless invalid_inputs?(options)
+    # prep variables
+    @auth = {username: options[:email], password: options[:password]}
+    @log_level = options[:log_level]
+    @output_type = options[:output_type]
     # used to make one big dumpfile of all metadata related to your helpcenter
     @raw_data = {categories: [], sections: [], articles: [], article_attachments: []}
-    # log_level can be "verbose", "standard"
-    @log_level = LOG_LEVELS.has_key?(log_level) ? log_level : "standard"
-    self.class.base_uri "https://#{zedesk_subdomain}.zendesk.com"
+    # configure Httparty base uri
+    self.class.base_uri "https://#{options[:subdomain]}.zendesk.com"
   end
 
   # section: loop over all categories, sections, articles and attachments
@@ -76,13 +84,14 @@ class ExportHelpCenter
         log("  #{section['name']}")
 
         articles(section['id'])['articles'].each do |article|
-          @raw_data[:articles] << article
-          log("    #{article['name']}", "standard")
+          log("    #{article['name']}", :standard)
 
-          article_dir = "#{dir_path(category, section, article)}/"
-          # puts "article_dir = #{article_dir}"
-          file_path = "#{article_dir}#{slugify(article['name'])}.html"
-          File.open(file_path, "w+") { |f| f.puts article_html_content(article, ) }
+          article_dir = dir_path(category, section, article)
+          file_path = "#{article_dir}index.html"
+          article['backup_path'] = file_path
+          @raw_data[:articles] << article
+
+          File.open(file_path, "w+") { |f| f.puts article_html_content(article) }
 
           article_attachments(article['id'])['article_attachments'].each do |article_attachment|
             @raw_data[:article_attachments] << article_attachment
@@ -99,15 +108,49 @@ class ExportHelpCenter
     File.open("./meta_data.json", "w+") { |f| f.puts JSON.pretty_generate(raw_data) }
   end
 
+  def create_table_of_contents!
+    File.open("./index.html", "w+") { |f| f.puts main_overview_file }
+  end
+
   # Section: Article content
   # ---------------------------------------
 
   def article_html_content(article)
-    regex_find = /https:\/\/.+?zendesk.com.+?article_attachments\/(\d+?)\/(.+?)" alt/
-    regex_replace = '\1-\2" alt'
     # add some boilerplat to make it all look nicer
     # and replace all image links towards the local url
-    """
+    regex_find = /https:\/\/.+?zendesk.com.+?article_attachments\/(\d+?)\/(.+)\.(.+?)" alt/
+    regex_replace = output_type == :slugified ? '\1-\2.\3" alt' : '\1.\3" alt'
+    boiler_plate_html do
+      """
+      <h1>#{article['name']}</h1>
+      #{article['body'].to_s.gsub(regex_find, regex_replace)}
+      """
+    end
+  end
+
+  def main_overview_file
+    boiler_plate_html do
+      content = []
+
+      raw_data[:categories].each do |cat|
+        content << "<h1>#{cat['name']}</h1>"
+        raw_data[:sections].each do |section|
+          next if section["category_id"] != cat['id']
+          content << "<span class=\"wysiwyg-font-size-large\">#{section["name"]}</span><br />"
+          content << "<ul>"
+          raw_data[:articles].each do |article|
+            next if article["section_id"] != section['id']
+            content << "<li><a href='#{article['backup_path']}'>#{article['name']}</a></li>"
+          end
+          content << "</ul>"
+        end
+      end
+      content.join("\n")
+    end
+  end
+
+  def boiler_plate_html &block
+        """
 <html>
   <head>
     <meta charset='UTF-8'>
@@ -115,26 +158,43 @@ class ExportHelpCenter
   </head>
   <body>
     <div id='container'>
-      <h1>#{article['name']}</h1>
-      #{article['body'].to_s.gsub(regex_find, regex_replace)}
+    #{yield}
     </div>
   </body>
 </html>
     """
-
   end
 
   # section: Debugging
   # ---------------------------------------
   # input:
   # - text: text to log
-  # - level: "standard" / "verbose". States when it needs to be logged
-  def log(text, level = "standard")
+  # - level: :standard / :verbose. States when it needs to be logged
+  def log(text, level = :standard)
     # protect against bad input
     return unless LOG_LEVELS.has_key?(level)
 
     # output when the log level we are requesting
     puts text if LOG_LEVELS[log_level] >= LOG_LEVELS[level]
+  end
+
+  def invalid_inputs?(options)
+    if REQUIRED_INPUTS.map{|k| options[k].nil?}.any?
+      puts "Missing one of required inputs.\nExpecting: #{REQUIRED_INPUTS}.\nReceived = #{options}"
+      return false
+    end
+
+    unless LOG_LEVELS.include?(options[:log_level])
+      puts "Log level (#{options[:log_level]}) not recognized. Should be one of the values: #{LOG_LEVELS}"
+      return false
+    end
+
+    unless OUTPUT_TYPES.include?(options[:output_type])
+      puts "Ouput type (#{options[:output_type]}) not recognized. Should be one of the values: #{OUTPUT_TYPES}"
+      return false
+    end
+
+    return true
   end
 
   # section: Make sure directories exist
@@ -145,14 +205,14 @@ class ExportHelpCenter
   def dir_path(category, section = nil, article = nil)
     # each resource has an id and name attribute
     # let's use this to build a path where we can store the actual data
-    log("      buidling dir_path for #{[category, section, article].compact.map{|r| r['name']}}", "verbose")
+    log("      buidling dir_path for #{[category, section, article].compact.map{|r| r['name']}}", :verbose)
     [category, section, article].compact.inject("./") do |dir_path, resource|
       # check if we have existing folder that needs to be renamed
-      rename_dir_with_same_id!(dir_path, resource['id'], resource['name'])
+      path_to_append = output_type == :slugified ? "#{resource['id']}-#{slugify(resource['name'])}" : "#{resource['id']}"
+      rename_dir_or_file_starting_with_id!(dir_path, resource['id'], path_to_append)
       # build path and check if folder exists
-      path_to_append = "#{resource['id']}-#{slugify(resource['name'])}/"
-      log("      #{path_to_append} appended to #{dir_path}", "verbose")
-      dir_path += path_to_append
+      log("      #{path_to_append} appended to #{dir_path}", :verbose)
+      dir_path += path_to_append + "/"
       Dir.mkdir(dir_path) unless File.exists?(dir_path)
       # end point is begin point of next iteration
       dir_path
@@ -169,20 +229,18 @@ class ExportHelpCenter
   # output
   # - false if nothing needs renamed
   # - true if a dir was renamed
-  def rename_dir_with_same_id!(path, id, name)
-    dir_to_rename = Dir.entries(path).select do |entry|
-      dir_id,*slugified_name = entry.split("-")
-
-      File.directory?(File.join(path,entry)) &&
-        !(entry =='.' || entry == '..') &&
-        dir_id == id.to_s &&
-        slugified_name != slugify(name).split("-")
+  def rename_dir_or_file_starting_with_id!(current_directory, id, should_be_name_for_item)
+    current_name_for_item = Dir.entries(current_directory).select do |entry|
+      entry.start_with?(id.to_s)
     end.first
 
-    return false unless dir_to_rename
+    # dir or file not found, nothing to rename
+    return false unless current_name_for_item
+    # dir or file exists, but already with correct name
+    return false if current_name_for_item == should_be_name_for_item
 
-    log("      renaming #{path}#{dir_to_rename} to  #{path}#{id}-#{slugify(name)}", "verbose")
-    FileUtils.mv "#{path}#{dir_to_rename}", "#{path}#{id}-#{slugify(name)}"
+    log("      renaming #{current_directory}#{current_name_for_item}} to #{current_directory}#{should_be_name_for_item}", :verbose)
+    FileUtils.mv "#{current_directory}#{current_name_for_item}", "#{current_directory}#{should_be_name_for_item}"
     return true
   end
 
@@ -225,29 +283,49 @@ class ExportHelpCenter
 
 
   def download_attachment!(article_attachment, store_in_dir)
-    # check if file with that id is already present, if so, skip
+    file_name = "#{article_attachment['id']}#{output_type == :slugified ? "-#{article_attachment['file_name']}" : "#{File.extname(article_attachment['file_name'])}"}"
+    # rename file if it existed with same id but incorrect name
+    rename_dir_or_file_starting_with_id!(store_in_dir, article_attachment['id'], file_name)
+
+    # if file with same id already present, do not "redownload"
     return true if Dir.entries(store_in_dir).select{|e| e.start_with?(article_attachment['id'].to_s)}.length > 0
     log("      #{article_attachment['file_name']}")
 
     begin
       options = {:basic_auth => @auth}
       file_contents = self.class.get(article_attachment['content_url'], options)
-      file_path = "#{store_in_dir}#{article_attachment['id']}-#{article_attachment['file_name']}"
+      file_path = "#{store_in_dir}#{file_name}"
       File.open(file_path, "w+") { |f| f.puts file_contents }
-    rescue
-      log("      !!! failed download: " + article_attachment['content_url'])
+    rescue Exception => e
+      log("      !!! failed download: " + article_attachment['content_url'] + ". error: #{e.message}")
     end
   end
 end
 
+# section: Executing the script
+# ---------------------------------------
+
+
+# default options (different between Microsoft windows and other OS)
+is_windows = (RbConfig::CONFIG['host_os'] =~ /mswin|mingw|cygwin/)
+options = {
+  log_level: :standard,
+  output_type: is_windows ? :id_only : :slugified
+}
+
+# step 1: get the attributes through the params
+OptionParser.new do |opts|
+  opts.banner = "Usage: zendesk-helpcenter-export.rb [options]"
+  opts.on('-e', '--email email', 'Email of a zendesk agent having access to the help center (e.g. joe@icecream.com)') { |email|  options[:email] = email }
+  opts.on('-p', '--password password', 'Password')  { |password|  options[:password] = password }
+  opts.on('-d', '--subdomain subdomain', 'Zendesk subdomain (e.g. icecream)')  { |subdomain|  options[:subdomain] = subdomain}
+  opts.on('-v', '--verbose-logging', 'Verbose logging to identify possible bugs')     { options[:log_level] = :verbose }
+  opts.on('-c', '--compact-file-names', 'Force short filenames for windows based file systems that are limited to 260 path lengths') { options[:output_type] = :id_only }
+  opts.on('-h', '--help', 'Displays Help') { puts opts; exit }
+end.parse!
+
 # run the class
-export = ExportHelpCenter.new(
-  email_user: ARGV[0],
-  password: ARGV[1],
-  zedesk_subdomain: ARGV[2],
-
-  log_level: ARGV[3]
-)
-
+export = ExportHelpCenter.new(options)
 export.to_html!
 export.to_json!
+export.create_table_of_contents!
