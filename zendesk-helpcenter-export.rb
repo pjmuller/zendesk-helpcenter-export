@@ -79,7 +79,7 @@ class ExportHelpCenter
 
           article_dir = "#{dir_path(category, section, article)}/"
           # puts "article_dir = #{article_dir}"
-          file_path = "#{article_dir}#{article['name']}.html"
+          file_path = "#{article_dir}#{slugify(article['name'])}.html"
           File.open(file_path, "w+") { |f| f.puts article_html_content(article, ) }
 
           article_attachments(article['id'])['article_attachments'].each do |article_attachment|
