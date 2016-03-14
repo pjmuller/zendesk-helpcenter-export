@@ -64,7 +64,7 @@ class ExportHelpCenter
     @log_level = options[:log_level]
     @output_type = options[:output_type]
     # used to make one big dumpfile of all metadata related to your helpcenter
-    @raw_data = {categories: [], sections: [], articles: [], article_attachments: []}
+    @raw_data = {locales: [], categories: [], sections: [], articles: [], article_attachments: []}
     # configure Httparty base uri
     self.class.base_uri "https://#{options[:subdomain]}.zendesk.com"
   end
@@ -73,30 +73,35 @@ class ExportHelpCenter
   # ---------------------------------------
 
   def to_html!
-    return if api_error?(categories)
+    locales["locales"].each do |locale_code|
+      # contrary to what is said on https://developer.zendesk.com/rest_api/docs/core/locales
+      # we do not get an ID, so I'm inventing one that is unique per locale
+      locale = {"name" => locale_code, "id" => locale_code.chars.map {|ch| ch.ord - 'A'.ord + 10}.join}
+      @raw_data[:locales] << locale
 
-    categories['categories'].each do |category|
-      log(category['name'].upcase)
-      @raw_data[:categories] << category
+      categories(locale_code)['categories'].each do |category|
+        log(category['name'].upcase)
+        @raw_data[:categories] << category
 
-      sections(category['id'])['sections'].each do |section|
-        @raw_data[:sections] << section
-        log("  #{section['name']}")
+        sections(locale_code, category['id'])['sections'].each do |section|
+          @raw_data[:sections] << section
+          log("  #{section['name']}")
 
-        articles(section['id'])['articles'].each do |article|
-          log("    #{article['name']}", :standard)
+          articles(locale_code, section['id'])['articles'].each do |article|
+            log("    #{article['name']}", :standard)
 
-          article_dir = dir_path(category, section, article)
-          file_path = "#{article_dir}index.html"
-          article['backup_path'] = file_path
-          @raw_data[:articles] << article
+            article_dir = dir_path(locale, category, section, article)
+            file_path = "#{article_dir}index.html"
+            article['backup_path'] = file_path
+            @raw_data[:articles] << article
 
-          File.open(file_path, "w+") { |f| f.puts article_html_content(article) }
+            File.open(file_path, "w+") { |f| f.puts article_html_content(article) }
 
-          article_attachments(article['id'])['article_attachments'].each do |article_attachment|
-            @raw_data[:article_attachments] << article_attachment
-            # optimization, do not download attachment when already present (we could check based on the id)
-            download_attachment!(article_attachment, article_dir)
+            article_attachments(article['id'])['article_attachments'].each do |article_attachment|
+              @raw_data[:article_attachments] << article_attachment
+              # optimization, do not download attachment when already present (we could check based on the id)
+              download_attachment!(article_attachment, article_dir)
+            end
           end
         end
       end
@@ -132,17 +137,20 @@ class ExportHelpCenter
     boiler_plate_html do
       content = []
 
-      raw_data[:categories].each do |cat|
-        content << "<h1>#{cat['name']}</h1>"
-        raw_data[:sections].each do |section|
-          next if section["category_id"] != cat['id']
-          content << "<span class=\"wysiwyg-font-size-large\">#{section["name"]}</span><br />"
-          content << "<ul>"
-          raw_data[:articles].each do |article|
-            next if article["section_id"] != section['id']
-            content << "<li><a href='#{article['backup_path']}'>#{article['name']}</a></li>"
+      raw_data[:locales].each do |locale|
+        content << "<h1>#{locale['name']}</h1>"
+        raw_data[:categories].each do |cat|
+          content << "<h2>#{cat['name']}</h2>"
+          raw_data[:sections].each do |section|
+            next if section["category_id"] != cat['id']
+            content << "<span class=\"wysiwyg-font-size-large\">#{section["name"]}</span><br />"
+            content << "<ul>"
+            raw_data[:articles].each do |article|
+              next if article["section_id"] != section['id']
+              content << "<li><a href='#{article['backup_path']}'>#{article['name']}</a></li>"
+            end
+            content << "</ul>"
           end
-          content << "</ul>"
         end
       end
       content.join("\n")
@@ -202,11 +210,11 @@ class ExportHelpCenter
 
   # return the dir_path (string) for given resource
   # and create the path if does not exist yet
-  def dir_path(category, section = nil, article = nil)
+  def dir_path(locale, category, section = nil, article = nil)
     # each resource has an id and name attribute
     # let's use this to build a path where we can store the actual data
-    log("      buidling dir_path for #{[category, section, article].compact.map{|r| r['name']}}", :verbose)
-    [category, section, article].compact.inject("./") do |dir_path, resource|
+    log("      buidling dir_path for #{[locale, category, section, article].compact.map{|r| r['name']}}", :verbose)
+    [locale, category, section, article].compact.inject("./") do |dir_path, resource|
       # check if we have existing folder that needs to be renamed
       path_to_append = output_type == :slugified ? "#{resource['id']}-#{slugify(resource['name'])}" : "#{resource['id']}"
       rename_dir_or_file_starting_with_id!(dir_path, resource['id'], path_to_append)
@@ -252,10 +260,11 @@ class ExportHelpCenter
   # ---------------------------------------
   def api(url)
     options = {:basic_auth => @auth}
-    self.class.get("/api/v2/help_center/#{url}", options)
+    response = self.class.get("/api/v2/help_center/#{url}", options)
+    return_response_or_exit_when_error(response)
   end
 
-  def api_error?(api_response)
+  def return_response_or_exit_when_error(api_response)
     if api_response.code != 200
       puts "Could not connect to the Zendesk API."
       puts "Most likely you provided incorrect username / password / zendesk domain."
@@ -268,18 +277,20 @@ class ExportHelpCenter
       puts ""
       puts "response: #{api_response.response.inspect}"
       puts "parsed response: #{api_response.parsed_response.inspect}"
-      true
+
+      exit
     else
-      false
+      api_response
     end
   end
 
 
   # see documentation on https://developer.zendesk.com/rest_api/docs/help_center/introduction
-  def categories()          api("categories.json")                          end
-  def sections(category_id) api("categories/#{category_id}/sections.json")  end
-  def articles(section_id)  api("sections/#{section_id}/articles.json")     end
-  def article_attachments(article_id)  api("articles/#{article_id}/attachments.json") end
+  def locales()                         api("locales.json")                                       end
+  def categories(locale)                api("#{locale}/categories.json")                          end
+  def sections(locale, category_id)     api("#{locale}/categories/#{category_id}/sections.json")  end
+  def articles(locale, section_id)      api("#{locale}/sections/#{section_id}/articles.json")     end
+  def article_attachments(article_id)   api("articles/#{article_id}/attachments.json")            end
 
 
   def download_attachment!(article_attachment, store_in_dir)
