@@ -1,6 +1,6 @@
 require 'rubygems'
 require 'httparty'
-require 'FileUtils'
+require 'fileutils'
 require 'json'
 require 'uri'
 require 'optparse'
