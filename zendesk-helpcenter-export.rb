@@ -51,7 +51,7 @@ class ExportHelpCenter
   include HTTParty
 
 
-  attr :raw_data, :log_level, :output_type, :locale_filter
+  attr :raw_data, :log_level, :output_type
   LOG_LEVELS = {standard: 1, verbose: 2}
   OUTPUT_TYPES = [:slugified, :id_only]
   REQUIRED_INPUTS = [:email, :password, :subdomain]
@@ -63,7 +63,6 @@ class ExportHelpCenter
     @auth = {username: options[:email], password: options[:password]}
     @log_level = options[:log_level]
     @output_type = options[:output_type]
-    @locale_filter = options[:locale]
     # used to make one big dumpfile of all metadata related to your helpcenter
     @raw_data = {locales: [], categories: [], sections: [], articles: [], article_attachments: []}
     # configure Httparty base uri
@@ -74,10 +73,7 @@ class ExportHelpCenter
   # ---------------------------------------
 
   def to_html!
-    locales = get_locales(@locale_filter);
-    log("These locales will be exported: #{locales}", :verbose);
-
-    locales.each do |locale_code|
+    locales["locales"].each do |locale_code|
       # contrary to what is said on https://developer.zendesk.com/rest_api/docs/core/locales
       # we do not get an ID, so I'm inventing one that is unique per locale
       locale = {"name" => locale_code, "id" => locale_code.chars.map {|ch| ch.ord - 'A'.ord + 10}.join}
@@ -315,28 +311,6 @@ class ExportHelpCenter
       log("      !!! failed download: " + article_attachment['content_url'] + ". error: #{e.message}")
     end
   end
-
-  # Retrieve the list of locales to export
-  # ---------------------------------------
-  # input:
-  # - locale_filter: user filter
-  # output:
-  # - an array containing locales on 2 (fr) or 5 chars (en-us)
-  def get_locales(locale_filter)
-    all_locales = locales()['locales']
-    
-    return all_locales if locale_filter.nil?
-
-    locales_to_filter = locale_filter.split(',')
-    existing_locales = locales_to_filter & all_locales
-    non_existing_locales = locales_to_filter - all_locales
-
-    log("Locales #{non_existing_locales} won't be exported as they do not exist for specified account", :verbose) unless non_existing_locales.empty?
-
-    return existing_locales unless existing_locales.empty?
-
-    raise RuntimeError, "Locales #{locale_filter} does not exist in specified account"
-  end
 end
 
 # section: Executing the script
@@ -358,7 +332,6 @@ OptionParser.new do |opts|
   opts.on('-d', '--subdomain subdomain', 'Zendesk subdomain (e.g. icecream)')  { |subdomain|  options[:subdomain] = subdomain}
   opts.on('-v', '--verbose-logging', 'Verbose logging to identify possible bugs')     { options[:log_level] = :verbose }
   opts.on('-c', '--compact-file-names', 'Force short filenames for windows based file systems that are limited to 260 path lengths') { options[:output_type] = :id_only }
-  opts.on('-l', '--filter-locales locales', 'Locales to filter, comma separated list (e.g. fr for single locale filter, de,it,ch for multiple locales)') { |locale| options[:locale] = locale }
   opts.on('-h', '--help', 'Displays Help') { puts opts; exit }
 end.parse!
 
