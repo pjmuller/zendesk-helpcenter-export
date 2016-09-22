@@ -42,6 +42,8 @@ While running the command you can pass two extra options
   You do not need to remove all directies and files if you switch from the longer (slugified) names to only id's. The script will smartly rename everything. Isn't that neat :)?
 - ```ruby zendesk-helpcenter-export.rb ... --verbose-logging``` to help you debugging when something is not going as planned
 
+- ```ruby zendesk-helpcenter-export.rb ... --filter-locales locales``` allow to export data for specified locales only
+
 # Requirements
 
 - ruby >= 2.0, do ```ruby -v``` in your terminal. If lower google how update. (easy with rvm, rbenv, brew)
