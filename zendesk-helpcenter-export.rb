@@ -65,7 +65,7 @@ class ExportHelpCenter
     @output_type = options[:output_type]
     @locale_filter = options[:locale]
     # used to make one big dumpfile of all metadata related to your helpcenter
-    @raw_data = {locales: [], categories: [], sections: [], articles: [], article_attachments: []}
+    @raw_data = {locales: []}
     # configure Httparty base uri
     self.class.base_uri "https://#{options[:subdomain]}.zendesk.com"
   end
@@ -80,35 +80,43 @@ class ExportHelpCenter
     locales.each do |locale_code|
       # contrary to what is said on https://developer.zendesk.com/rest_api/docs/core/locales
       # we do not get an ID, so I'm inventing one that is unique per locale
-      locale = {"name" => locale_code, "id" => locale_code.chars.map {|ch| ch.ord - 'A'.ord + 10}.join}
-      @raw_data[:locales] << locale
+      locale = {"name" => locale_code, "id" => locale_code.chars.map {|ch| ch.ord - 'A'.ord + 10}.join, :categories => []}
 
       categories(locale_code)['categories'].each do |category|
         log(category['name'].upcase)
-        @raw_data[:categories] << category
+	      category[:sections] = []
 
         sections(locale_code, category['id'])['sections'].each do |section|
-          @raw_data[:sections] << section
           log("  #{section['name']}")
+          section[:articles] = []
 
           articles(locale_code, section['id'])['articles'].each do |article|
             log("    #{article['name']}", :standard)
+            article[:article_attachments] = []
 
             article_dir = dir_path(locale, category, section, article)
             file_path = "#{article_dir}index.html"
             article['backup_path'] = file_path
-            @raw_data[:articles] << article
 
             File.open(file_path, "w+") { |f| f.puts article_html_content(article) }
 
             article_attachments(article['id'])['article_attachments'].each do |article_attachment|
-              @raw_data[:article_attachments] << article_attachment
               # optimization, do not download attachment when already present (we could check based on the id)
               download_attachment!(article_attachment, article_dir)
+
+              article[:article_attachments] << article_attachment
             end
+
+            section[:articles] << article
           end
+
+          category[:sections] << section
         end
+
+        locale[:categories] << category
       end
+
+      @raw_data[:locales] << locale
     end
   end
 
@@ -143,14 +151,12 @@ class ExportHelpCenter
 
       raw_data[:locales].each do |locale|
         content << "<h1>#{locale['name']}</h1>"
-        raw_data[:categories].each do |cat|
+        locale[:categories].each do |cat|
           content << "<h2>#{cat['name']}</h2>"
-          raw_data[:sections].each do |section|
-            next if section["category_id"] != cat['id']
+          cat[:sections].each do |section|
             content << "<span class=\"wysiwyg-font-size-large\">#{section["name"]}</span><br />"
             content << "<ul>"
-            raw_data[:articles].each do |article|
-              next if article["section_id"] != section['id']
+            section[:articles].each do |article|
               content << "<li><a href='#{article['backup_path']}'>#{article['name']}</a></li>"
             end
             content << "</ul>"
