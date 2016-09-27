@@ -51,7 +51,7 @@ class ExportHelpCenter
   include HTTParty
 
 
-  attr :raw_data, :log_level, :output_type
+  attr :raw_data, :log_level, :output_type, :locale_filter
   LOG_LEVELS = {standard: 1, verbose: 2}
   OUTPUT_TYPES = [:slugified, :id_only]
   REQUIRED_INPUTS = [:email, :password, :subdomain]
@@ -63,8 +63,9 @@ class ExportHelpCenter
     @auth = {username: options[:email], password: options[:password]}
     @log_level = options[:log_level]
     @output_type = options[:output_type]
+    @locale_filter = options[:locale]
     # used to make one big dumpfile of all metadata related to your helpcenter
-    @raw_data = {categories: [], sections: [], articles: [], article_attachments: []}
+    @raw_data = {locales: []}
     # configure Httparty base uri
     self.class.base_uri "https://#{options[:subdomain]}.zendesk.com"
   end
@@ -73,33 +74,49 @@ class ExportHelpCenter
   # ---------------------------------------
 
   def to_html!
-    return if api_error?(categories)
+    locales = get_locales(@locale_filter);
+    log("These locales will be exported: #{locales}", :verbose);
 
-    categories['categories'].each do |category|
-      log(category['name'].upcase)
-      @raw_data[:categories] << category
+    locales.each do |locale_code|
+      # contrary to what is said on https://developer.zendesk.com/rest_api/docs/core/locales
+      # we do not get an ID, so I'm inventing one that is unique per locale
+      locale = {"name" => locale_code, "id" => locale_code.chars.map {|ch| ch.ord - 'A'.ord + 10}.join, :categories => []}
 
-      sections(category['id'])['sections'].each do |section|
-        @raw_data[:sections] << section
-        log("  #{section['name']}")
+      categories(locale_code)['categories'].each do |category|
+        log(category['name'].upcase)
+	      category[:sections] = []
 
-        articles(section['id'])['articles'].each do |article|
-          log("    #{article['name']}", :standard)
+        sections(locale_code, category['id'])['sections'].each do |section|
+          log("  #{section['name']}")
+          section[:articles] = []
 
-          article_dir = dir_path(category, section, article)
-          file_path = "#{article_dir}index.html"
-          article['backup_path'] = file_path
-          @raw_data[:articles] << article
+          articles(locale_code, section['id'])['articles'].each do |article|
+            log("    #{article['name']}", :standard)
+            article[:article_attachments] = []
 
-          File.open(file_path, "w+") { |f| f.puts article_html_content(article) }
+            article_dir = dir_path(locale, category, section, article)
+            file_path = "#{article_dir}index.html"
+            article['backup_path'] = file_path
 
-          article_attachments(article['id'])['article_attachments'].each do |article_attachment|
-            @raw_data[:article_attachments] << article_attachment
-            # optimization, do not download attachment when already present (we could check based on the id)
-            download_attachment!(article_attachment, article_dir)
+            File.open(file_path, "w+") { |f| f.puts article_html_content(article) }
+
+            article_attachments(article['id'])['article_attachments'].each do |article_attachment|
+              # optimization, do not download attachment when already present (we could check based on the id)
+              download_attachment!(article_attachment, article_dir)
+
+              article[:article_attachments] << article_attachment
+            end
+
+            section[:articles] << article
           end
+
+          category[:sections] << section
         end
+
+        locale[:categories] << category
       end
+
+      @raw_data[:locales] << locale
     end
   end
 
@@ -132,17 +149,18 @@ class ExportHelpCenter
     boiler_plate_html do
       content = []
 
-      raw_data[:categories].each do |cat|
-        content << "<h1>#{cat['name']}</h1>"
-        raw_data[:sections].each do |section|
-          next if section["category_id"] != cat['id']
-          content << "<span class=\"wysiwyg-font-size-large\">#{section["name"]}</span><br />"
-          content << "<ul>"
-          raw_data[:articles].each do |article|
-            next if article["section_id"] != section['id']
-            content << "<li><a href='#{article['backup_path']}'>#{article['name']}</a></li>"
+      raw_data[:locales].each do |locale|
+        content << "<h1>#{locale['name']}</h1>"
+        locale[:categories].each do |cat|
+          content << "<h2>#{cat['name']}</h2>"
+          cat[:sections].each do |section|
+            content << "<span class=\"wysiwyg-font-size-large\">#{section["name"]}</span><br />"
+            content << "<ul>"
+            section[:articles].each do |article|
+              content << "<li><a href='#{article['backup_path']}'>#{article['name']}</a></li>"
+            end
+            content << "</ul>"
           end
-          content << "</ul>"
         end
       end
       content.join("\n")
@@ -202,11 +220,11 @@ class ExportHelpCenter
 
   # return the dir_path (string) for given resource
   # and create the path if does not exist yet
-  def dir_path(category, section = nil, article = nil)
+  def dir_path(locale, category, section = nil, article = nil)
     # each resource has an id and name attribute
     # let's use this to build a path where we can store the actual data
-    log("      buidling dir_path for #{[category, section, article].compact.map{|r| r['name']}}", :verbose)
-    [category, section, article].compact.inject("./") do |dir_path, resource|
+    log("      buidling dir_path for #{[locale, category, section, article].compact.map{|r| r['name']}}", :verbose)
+    [locale, category, section, article].compact.inject("./") do |dir_path, resource|
       # check if we have existing folder that needs to be renamed
       path_to_append = output_type == :slugified ? "#{resource['id']}-#{slugify(resource['name'])}" : "#{resource['id']}"
       rename_dir_or_file_starting_with_id!(dir_path, resource['id'], path_to_append)
@@ -252,10 +270,11 @@ class ExportHelpCenter
   # ---------------------------------------
   def api(url)
     options = {:basic_auth => @auth}
-    self.class.get("/api/v2/help_center/#{url}", options)
+    response = self.class.get("/api/v2/help_center/#{url}", options)
+    return_response_or_exit_when_error(response)
   end
 
-  def api_error?(api_response)
+  def return_response_or_exit_when_error(api_response)
     if api_response.code != 200
       puts "Could not connect to the Zendesk API."
       puts "Most likely you provided incorrect username / password / zendesk domain."
@@ -268,18 +287,20 @@ class ExportHelpCenter
       puts ""
       puts "response: #{api_response.response.inspect}"
       puts "parsed response: #{api_response.parsed_response.inspect}"
-      true
+
+      exit
     else
-      false
+      api_response
     end
   end
 
 
   # see documentation on https://developer.zendesk.com/rest_api/docs/help_center/introduction
-  def categories()          api("categories.json")                          end
-  def sections(category_id) api("categories/#{category_id}/sections.json")  end
-  def articles(section_id)  api("sections/#{section_id}/articles.json")     end
-  def article_attachments(article_id)  api("articles/#{article_id}/attachments.json") end
+  def locales()                         api("locales.json")                                       end
+  def categories(locale)                api("#{locale}/categories.json")                          end
+  def sections(locale, category_id)     api("#{locale}/categories/#{category_id}/sections.json")  end
+  def articles(locale, section_id)      api("#{locale}/sections/#{section_id}/articles.json")     end
+  def article_attachments(article_id)   api("articles/#{article_id}/attachments.json")            end
 
 
   def download_attachment!(article_attachment, store_in_dir)
@@ -299,6 +320,28 @@ class ExportHelpCenter
     rescue Exception => e
       log("      !!! failed download: " + article_attachment['content_url'] + ". error: #{e.message}")
     end
+  end
+
+  # Retrieve the list of locales to export
+  # ---------------------------------------
+  # input:
+  # - locale_filter: user filter
+  # output:
+  # - an array containing locales on 2 (fr) or 5 chars (en-us)
+  def get_locales(locale_filter)
+    all_locales = locales()['locales']
+    
+    return all_locales if locale_filter.nil?
+
+    locales_to_filter = locale_filter.split(',')
+    existing_locales = locales_to_filter & all_locales
+    non_existing_locales = locales_to_filter - all_locales
+
+    log("Locales #{non_existing_locales} won't be exported as they do not exist for specified account", :verbose) unless non_existing_locales.empty?
+
+    return existing_locales unless existing_locales.empty?
+
+    raise RuntimeError, "Locales #{locale_filter} does not exist in specified account"
   end
 end
 
@@ -321,6 +364,7 @@ OptionParser.new do |opts|
   opts.on('-d', '--subdomain subdomain', 'Zendesk subdomain (e.g. icecream)')  { |subdomain|  options[:subdomain] = subdomain}
   opts.on('-v', '--verbose-logging', 'Verbose logging to identify possible bugs')     { options[:log_level] = :verbose }
   opts.on('-c', '--compact-file-names', 'Force short filenames for windows based file systems that are limited to 260 path lengths') { options[:output_type] = :id_only }
+  opts.on('-l', '--filter-locales locales', 'Locales to filter, comma separated list (e.g. fr for single locale filter, de,it,ch for multiple locales)') { |locale| options[:locale] = locale }
   opts.on('-h', '--help', 'Displays Help') { puts opts; exit }
 end.parse!
 
