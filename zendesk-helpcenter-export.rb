@@ -1,3 +1,4 @@
+# coding: utf-8
 require 'rubygems'
 require 'httparty'
 require 'fileutils'
@@ -110,6 +111,9 @@ class ExportHelpCenter
 
   def create_table_of_contents!
     File.open("./index.html", "w+") { |f| f.puts main_overview_file }
+    
+    # ここで各階層の index.html を生成すれば良い。
+    
   end
 
   # Section: Article content
@@ -120,6 +124,9 @@ class ExportHelpCenter
     # and replace all image links towards the local url
     regex_find = /https:\/\/.+?zendesk.com.+?article_attachments\/(\d+?)\/(.+)\.(.+?)" alt/
     regex_replace = output_type == :slugified ? '\1-\2.\3" alt' : '\1.\3" alt'
+    
+    # ここでコンテンツを加工できる。
+    
     boiler_plate_html do
       """
       <h1>#{article['name']}</h1>
