@@ -65,7 +65,7 @@ class ExportHelpCenter
     @log_level = options[:log_level]
     @output_type = options[:output_type]
     # used to make one big dumpfile of all metadata related to your helpcenter
-    @raw_data = {categories: [], sections: [], articles: [], article_attachments: []}
+    @raw_data = {categories: []}
     # configure Httparty base uri
     self.class.base_uri "https://#{options[:subdomain]}.zendesk.com"
   end
@@ -78,29 +78,40 @@ class ExportHelpCenter
 
     categories['categories'].each do |category|
       log(category['name'].upcase)
-      @raw_data[:categories] << category
+      category_dir = dir_path(category)
+      category_file_path = "#{category_dir}index.html"
 
+      category[:sections] = []
       sections(category['id'])['sections'].each do |section|
-        @raw_data[:sections] << section
         log("  #{section['name']}")
+        section_dir = dir_path(category, section)
+        section_file_path = "#{section_dir}index.html"
 
+        section[:articles] = []
         articles(section['id'])['articles'].each do |article|
           log("    #{article['name']}", :standard)
-
           article_dir = dir_path(category, section, article)
-          file_path = "#{article_dir}index.html"
-          article['backup_path'] = file_path
-          @raw_data[:articles] << article
+          article_file_path = "#{article_dir}index.html"
 
-          File.open(file_path, "w+") { |f| f.puts article_html_content(article) }
-
-          article_attachments(article['id'])['article_attachments'].each do |article_attachment|
-            @raw_data[:article_attachments] << article_attachment
+          article[:attachments] = []
+          article_attachments(article['id'])['article_attachments'].each do |attachment|
+            article[:attachments] << attachment
             # optimization, do not download attachment when already present (we could check based on the id)
-            download_attachment!(article_attachment, article_dir)
+            download_attachment!(attachment, article_dir)
           end
+
+          article['backup_path'] = article_file_path
+          section[:articles] << article
+          File.open(article_file_path, "w+") { |f| f.puts article_html_content(article) }
+
         end
+
+        section['backup_path'] = section_file_path
+        category[:sections] << section
       end
+
+      category['backup_path'] = category_file_path
+      @raw_data[:categories] << category
     end
   end
 
@@ -110,10 +121,9 @@ class ExportHelpCenter
   end
 
   def create_table_of_contents!
-    File.open("./index.html", "w+") { |f| f.puts main_overview_file }
-    
-    # ここで各階層の index.html を生成すれば良い。
-    
+    all_overview_files.each do |path, html|
+      File.open("#{path}", "w+") { |f| f.puts html }
+    end
   end
 
   # Section: Article content
@@ -124,9 +134,10 @@ class ExportHelpCenter
     # and replace all image links towards the local url
     regex_find = /https:\/\/.+?zendesk.com.+?article_attachments\/(\d+?)\/(.+)\.(.+?)" alt/
     regex_replace = output_type == :slugified ? '\1-\2.\3" alt' : '\1.\3" alt'
-    
-    # ここでコンテンツを加工できる。
-    
+
+    # TODO: Enable internal links
+    #  Replace "https://xxxx.zendesk.com/hc/..." → <category>/<section>/<article>/...
+
     boiler_plate_html do
       """
       <h1>#{article['name']}</h1>
@@ -136,24 +147,76 @@ class ExportHelpCenter
   end
 
   def main_overview_file
+    root_overview_file(true)
+  end
+
+  def root_overview_file(recursive = false)
     boiler_plate_html do
       content = []
-
+      content << "<ul>"
       raw_data[:categories].each do |cat|
-        content << "<h1>#{cat['name']}</h1>"
-        raw_data[:sections].each do |section|
-          next if section["category_id"] != cat['id']
-          content << "<span class=\"wysiwyg-font-size-large\">#{section["name"]}</span><br />"
-          content << "<ul>"
-          raw_data[:articles].each do |article|
-            next if article["section_id"] != section['id']
-            content << "<li><a href='#{article['backup_path']}'>#{article['name']}</a></li>"
-          end
-          content << "</ul>"
+        content << "<li>"
+        content << "<h1 id='category-#{cat['id']}'><a href='#{cat['backup_path']}'>#{cat['name']}</a></h1>"
+        if recursive == true
+          content << category_overview_file(cat, recursive)
         end
+        content << "</li>"
       end
+      content << "</ul>"
       content.join("\n")
     end
+  end
+
+  def category_overview_file(category, recursive = false)
+    boiler_plate_html do
+      content = []
+      content << "<h1>#{category['name']}</h1>" if !recursive
+      content << "<ul>"
+      category[:sections].each do |section|
+        content << "<li>"
+        if recursive == true
+          content << "<h2 id='section-#{section['id']}'><a href='#{section['backup_path']}'>#{section['name']}</a></h2>"
+          content << section_overview_file(section, recursive)
+        else
+          content << "<h2 id='section-#{section['id']}'><a href='./#{section['id']}/index.html'>#{section['name']}</a></h2>"
+        end
+        content << "</li>"
+      end
+      content << "</ul>"
+      content.join("\n")
+    end
+  end
+
+  def section_overview_file(section, recursive = false)
+    boiler_plate_html do
+      content = []
+      content << "<h2>#{section['name']}</h2>" if !recursive
+      content << "<ul>"
+      section[:articles].each do |article|
+        content << "<li>"
+        if recursive == true
+          content << "<h3 id='article-#{article['id']}'><a href='#{article['backup_path']}'>#{article['name']}</a></h3>"
+        else
+          content << "<h3 id='article-#{article['id']}'><a href='./#{article['id']}/index.html'>#{article['name']}</a></h3>"
+        end
+        content << "</li>"
+      end
+      content << "</ul>"
+      content.join("\n")
+    end
+  end
+
+  def all_overview_files
+    files = {'./index.html': main_overview_file}
+
+    raw_data[:categories].each do |cat|
+      files[cat['backup_path']] = category_overview_file(cat)
+      cat[:sections].each do |section|
+        files[section['backup_path']] = section_overview_file(section)
+      end
+    end
+
+    files
   end
 
   def boiler_plate_html &block
