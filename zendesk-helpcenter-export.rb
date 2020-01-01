@@ -74,45 +74,75 @@ class ExportHelpCenter
   # ---------------------------------------
 
   def to_html!
-    return if api_error?(categories)
+    log("\n Fetching Zendesk Guide contents ... \n\n", :standard)
 
-    categories['categories'].each do |category|
-      log(category['name'].upcase)
+    _c = categories
+    return if !_c || api_error?(_c)
+
+    _c['categories'].each_with_index do |category, category_index|
+      category['name'] = "#{category_index+1}. #{category['name']}"
+      log(" - [#{category['id']}] #{category['name']}")
+
       category_dir = dir_path(category)
       category_file_path = "#{category_dir}index.html"
-
+      category['backup_path'] = category_file_path
       category[:sections] = []
-      sections(category['id'])['sections'].each do |section|
-        log("  #{section['name']}")
+
+      _s = sections(category['id'])
+      next if !_s || api_error?(_s)
+
+      _s['sections'].each_with_index do |section, section_index|
+        section['name'] = "#{category_index+1}-#{section_index+1}. #{section['name']}"
+        log(" - - [#{section['id']}] #{section['name']}")
+
         section_dir = dir_path(category, section)
         section_file_path = "#{section_dir}index.html"
-
+        section['backup_path'] = section_file_path
         section[:articles] = []
-        articles(section['id'])['articles'].each do |article|
-          log("    #{article['name']}", :standard)
+
+        _a = articles(section['id'])
+        next if !_a || api_error?(_a)
+
+        _a['articles'].each_with_index do |article, article_index|
+          article['name'] = "#{category_index+1}-#{section_index+1}-#{article_index+1}. #{article['name']}"
+          log(" - - - [#{article['id']}] #{article['name']}", :standard)
+
           article_dir = dir_path(category, section, article)
           article_file_path = "#{article_dir}index.html"
-
+          article['backup_path'] = article_file_path
           article[:attachments] = []
-          article_attachments(article['id'])['article_attachments'].each do |attachment|
+
+          _aa = article_attachments(article['id'])
+          next if !_aa || api_error?(_aa)
+
+          _aa['article_attachments'].each do |attachment|
             article[:attachments] << attachment
             # optimization, do not download attachment when already present (we could check based on the id)
             download_attachment!(attachment, article_dir)
           end
 
-          article['backup_path'] = article_file_path
           section[:articles] << article
-          File.open(article_file_path, "w+") { |f| f.puts article_html_content(article) }
-
         end
 
-        section['backup_path'] = section_file_path
         category[:sections] << section
       end
 
-      category['backup_path'] = category_file_path
       @raw_data[:categories] << category
     end
+    log("\n Done. \n\n", :standard)
+
+    log("\n Localizing URLs in all articles ... \n\n", :standard)
+    @raw_data[:categories].each do |c|
+      c[:sections].each do |s|
+        s[:articles].each do |a|
+          print '.'
+          a['body'] = convert_body(a['body'])
+          File.open(a['backup_path'], "w+") { |f| f.puts article_html_content(a) }
+        end
+      end
+    end
+    log("\n Done. \n\n", :standard)
+
   end
 
   # can only be called AFTER export_html_and_images!
@@ -129,37 +159,69 @@ class ExportHelpCenter
   # Section: Article content
   # ---------------------------------------
 
+  def convert_body(body)
+    return body if body.class != String
+
+    # replace all image links towards the local url
+    body.gsub!(/https:\/\/[^\.]+\.zendesk\.com\/hc\/article_attachments\/([0-9]+)\/([^\/]+)\.([^\/\."]+)/i) {
+      (output_type == :slugified) ? "#{$1}-#{$2}.#{$3}" : "#{$1}.#{$3}"
+    }
+    body.gsub!(/https:\/\/[^\.]+\.zendesk\.com\/hc\/[^\/]+\/categories\/([0-9]+)(-[^"]+)?/i) {
+      found = nil
+      found = raw_data[:categories].find { |c| c['id'].to_s == $1 }
+      found ? "../../../#{found['backup_path']}" : $&
+    }
+    body.gsub!(/https:\/\/[^\.]+\.zendesk\.com\/hc\/[^\/]+\/sections\/([0-9]+)(-[^"]+)?/i) {
+      found = nil
+      raw_data[:categories].each do |c|
+        found = c[:sections].find { |s| s['id'].to_s == $1 }
+        break if found
+      end
+      found ? "../../../#{found['backup_path']}" : $&
+    }
+    body.gsub!(/https:\/\/[^\.]+\.zendesk\.com\/hc\/[^\/]+\/articles\/([0-9]+)(-[^"]+)?/i) {
+      found = nil
+      raw_data[:categories].each do |c|
+        c[:sections].each do |s|
+          found = s[:articles].find { |a| a['id'].to_s == $1 }
+          break if found
+        end
+        break if found
+      end
+      found ? "../../../#{found['backup_path']}" : $&
+    }
+    body.gsub!(/<(\/?)h([1-5])/i) { "<#{$1}h#{$2.to_i + 1}" } if body.match(/<h1/i)
+
+    body
+  end
+
   def article_html_content(article)
     # add some boilerplat to make it all look nicer
-    # and replace all image links towards the local url
-    regex_find = /https:\/\/.+?zendesk.com.+?article_attachments\/(\d+?)\/(.+)\.(.+?)" alt/
-    regex_replace = output_type == :slugified ? '\1-\2.\3" alt' : '\1.\3" alt'
-
-    # TODO: Enable internal links
-    #  Replace "https://xxxx.zendesk.com/hc/..." → <category>/<section>/<article>/...
-
     boiler_plate_html do
       """
+      <a href='../index.html'>[↑]</a>
       <h1>#{article['name']}</h1>
-      #{article['body'].to_s.gsub(regex_find, regex_replace)}
+      #{article['body']}
       """
     end
   end
 
   def main_overview_file
-    root_overview_file(true)
+    root_overview_file(recursive: true)
   end
 
-  def root_overview_file(recursive = false)
+  def root_overview_file(recursive: false, base_path: './')
     boiler_plate_html do
       content = []
+      if base_path == './'
+        content << "<h1>Table of Contents</h1>"
+      end
       content << "<ul>"
-      raw_data[:categories].each do |cat|
+      @raw_data[:categories].each do |category|
+        path = "#{base_path}#{category['id']}/"
         content << "<li>"
-        content << "<h1 id='category-#{cat['id']}'><a href='#{cat['backup_path']}'>#{cat['name']}</a></h1>"
-        if recursive == true
-          content << category_overview_file(cat, recursive)
-        end
+        content << "<a id='category-#{category['id']}' href='#{path}index.html'>#{category['name']}</a>"
+        content << category_overview_file(category, recursive: recursive, base_path: path) if recursive
         content << "</li>"
       end
       content << "</ul>"
@@ -167,19 +229,19 @@ class ExportHelpCenter
     end
   end
 
-  def category_overview_file(category, recursive = false)
+  def category_overview_file(category, recursive: false, base_path: './')
     boiler_plate_html do
       content = []
-      content << "<h1>#{category['name']}</h1>" if !recursive
+      if base_path == './'
+        content << "<a href='../index.html'>[↑]</a>"
+        content << "<h1>#{category['name']}</h1>"
+      end
       content << "<ul>"
       category[:sections].each do |section|
+        path = "#{base_path}#{section['id']}/"
         content << "<li>"
-        if recursive == true
-          content << "<h2 id='section-#{section['id']}'><a href='#{section['backup_path']}'>#{section['name']}</a></h2>"
-          content << section_overview_file(section, recursive)
-        else
-          content << "<h2 id='section-#{section['id']}'><a href='./#{section['id']}/index.html'>#{section['name']}</a></h2>"
-        end
+        content << "<a id='section-#{section['id']}' href='#{path}index.html'>#{section['name']}</a>"
+        content << section_overview_file(section, recursive: recursive, base_path: path) if recursive
         content << "</li>"
       end
       content << "</ul>"
@@ -187,18 +249,18 @@ class ExportHelpCenter
     end
   end
 
-  def section_overview_file(section, recursive = false)
+  def section_overview_file(section, recursive: false, base_path: './')
     boiler_plate_html do
       content = []
-      content << "<h2>#{section['name']}</h2>" if !recursive
+      if base_path == './'
+        content << "<a href='../index.html'>[↑]</a>"
+        content << "<h1>#{section['name']}</h1>"
+      end
       content << "<ul>"
       section[:articles].each do |article|
+        path = "#{base_path}#{article['id']}/"
         content << "<li>"
-        if recursive == true
-          content << "<h3 id='article-#{article['id']}'><a href='#{article['backup_path']}'>#{article['name']}</a></h3>"
-        else
-          content << "<h3 id='article-#{article['id']}'><a href='./#{article['id']}/index.html'>#{article['name']}</a></h3>"
-        end
+        content << "<a id='article-#{article['id']}' href='#{path}index.html'>#{article['name']}</a>"
         content << "</li>"
       end
       content << "</ul>"
@@ -209,9 +271,9 @@ class ExportHelpCenter
   def all_overview_files
     files = {'./index.html': main_overview_file}
 
-    raw_data[:categories].each do |cat|
-      files[cat['backup_path']] = category_overview_file(cat)
-      cat[:sections].each do |section|
+    @raw_data[:categories].each do |category|
+      files[category['backup_path']] = category_overview_file(category, recursive: true)
+      category[:sections].each do |section|
         files[section['backup_path']] = section_overview_file(section)
       end
     end
@@ -321,8 +383,13 @@ class ExportHelpCenter
   # section: API calls
   # ---------------------------------------
   def api(url)
-    options = {:basic_auth => @auth}
-    self.class.get("/api/v2/help_center/#{url}", options)
+    begin
+      options = {:basic_auth => @auth}
+      self.class.get("/api/v2/help_center/#{url}", options)
+    rescue => e
+      p e
+      nil
+    end
   end
 
   def api_error?(api_response)
