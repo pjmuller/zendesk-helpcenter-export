@@ -1,4 +1,4 @@
-#  Ruby script to export your Zendesk helpcenter (v 0.2)
+#  Ruby script to export your Zendesk helpcenter
 
 Script based on https://github.com/skipjac/pull-zendesk-forums
 (which exports the forum, not the help center article)
@@ -6,15 +6,17 @@ Script based on https://github.com/skipjac/pull-zendesk-forums
 it uses the Zendesk API to export all categories, sections, articles, article_attachments to html (and json)
 all of this in a nested folder structure
 
-    - category
-      - section
-        - article
-          - article.html
-          - image-1.jpg
-          - image-2.png
-    meta_data.json
+    - <category>/
+      - index.html
+      - <section>/
+        - index.html
+        - <article>/
+          - index.html
+    - attachments/
+      - image-1.jpg
+      - image-2.png
+    - meta_data.json
 
-![Zendesk demo](https://github.com/pjmuller/zendesk-helpcenter-export/raw/master/demo-screenshot.png)
 Bonus: it is smart in that when you rename a category, section, article it won't
 start to create duplicate folders but renames the old ones.
 The script can thus be used for both a new dump as updating an existing one.
