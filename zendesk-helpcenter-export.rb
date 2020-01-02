@@ -17,11 +17,14 @@ require 'rbconfig'
 # all of this in a nested folder structure
 #
 #   - category
+#     - index.html
 #     - section
+#       - index.html
 #       - article
-#         - article.html
-#         - image-1.jpg
-#         - image-2.png
+#         - index.html
+#   - attachments
+#     - image-1.jpg
+#     - image-2.png
 #   - meta_data.json
 #
 # Bonus: it is smart in that when you rename a category, section, article it won't
@@ -56,6 +59,7 @@ class ExportHelpCenter
   LOG_LEVELS = {standard: 1, verbose: 2}
   OUTPUT_TYPES = [:slugified, :id_only]
   REQUIRED_INPUTS = [:email, :password, :subdomain]
+  ATTACHMENTS_DIR = './attachments/'
 
 
   def initialize(options)
@@ -74,7 +78,7 @@ class ExportHelpCenter
   # ---------------------------------------
 
   def to_html!
-    log("\n Fetching Zendesk Guide contents ... \n\n", :standard)
+    log("\n Fetching all contents ... \n\n", :standard)
 
     _c = categories
     return if !_c || api_error?(_c)
@@ -118,7 +122,7 @@ class ExportHelpCenter
           _aa['article_attachments'].each do |attachment|
             article[:attachments] << attachment
             # optimization, do not download attachment when already present (we could check based on the id)
-            download_attachment!(attachment, article_dir)
+            download_attachment!(attachment, ATTACHMENTS_DIR)
           end
 
           section[:articles] << article
@@ -131,11 +135,11 @@ class ExportHelpCenter
     end
     log("\n Done. \n\n", :standard)
 
-    log("\n Localizing URLs in all articles ... \n\n", :standard)
+    log("\n Localizing all URLs in articles ... \n\n", :standard)
     @raw_data[:categories].each do |c|
       c[:sections].each do |s|
         s[:articles].each do |a|
-          print '.'
+          log(" - - - [#{a['id']}] #{a['name']}", :standard)
           a['body'] = convert_body(a['body'])
           File.open(a['backup_path'], "w+") { |f| f.puts article_html_content(a) }
         end
@@ -163,8 +167,13 @@ class ExportHelpCenter
     return body if body.class != String
 
     # replace all image links towards the local url
-    body.gsub!(/https:\/\/[^\.]+\.zendesk\.com\/hc\/article_attachments\/([0-9]+)\/([^\/]+)\.([^\/\."]+)/i) {
-      (output_type == :slugified) ? "#{$1}-#{$2}.#{$3}" : "#{$1}.#{$3}"
+    body.gsub!(/['"](https:\/\/[^\.]+\.zendesk\.com\/hc\/article_attachments\/([0-9]+)\/([^\/"]+)\.(png|jpe?g|gif|svg))['"]/i) {
+      attachment = {}
+      attachment['content_url'] = $1
+      attachment['id'] = $2
+      attachment['file_name'] = "#{$3}.#{$4}"
+      download_attachment!(attachment, ATTACHMENTS_DIR)
+      (output_type == :slugified) ? "\"../../../#{ATTACHMENTS_DIR}#{$2}-#{$3}.#{$4}\"" : "\"../../../#{ATTACHMENTS_DIR}#{$2}.#{$4}\""
     }
     body.gsub!(/https:\/\/[^\.]+\.zendesk\.com\/hc\/[^\/]+\/categories\/([0-9]+)(-[^"]+)?/i) {
       found = nil
@@ -420,13 +429,16 @@ class ExportHelpCenter
 
 
   def download_attachment!(article_attachment, store_in_dir)
-    file_name = "#{article_attachment['id']}#{output_type == :slugified ? "-#{article_attachment['file_name']}" : "#{File.extname(article_attachment['file_name'])}"}"
+    Dir.mkdir(store_in_dir) unless File.exists?(store_in_dir)
+
+    suffix = output_type == :slugified ? "-#{article_attachment['file_name']}" : "#{File.extname(article_attachment['file_name'])}"
+    file_name = "#{article_attachment['id']}#{suffix}"
     # rename file if it existed with same id but incorrect name
     rename_dir_or_file_starting_with_id!(store_in_dir, article_attachment['id'], file_name)
 
     # if file with same id already present, do not "redownload"
     return true if Dir.entries(store_in_dir).select{|e| e.start_with?(article_attachment['id'].to_s)}.length > 0
-    log("      #{article_attachment['file_name']}")
+    log(" - - - - #{article_attachment['file_name']}")
 
     begin
       options = {:basic_auth => @auth}
